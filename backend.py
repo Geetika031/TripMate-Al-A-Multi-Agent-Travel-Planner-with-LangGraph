@@ -1,4 +1,5 @@
 import os 
+import pymysql
 import certifi
 from dotenv import load_dotenv
 
@@ -16,6 +17,7 @@ from psycopg.rows import dict_row
 
 from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.postgres import PostgresSaver
+from langgraph.checkpoint.mysql.pymysql import PyMySQLSaver
 from langchain_core.messages import (
     AnyMessage,
     HumanMessage,
@@ -26,6 +28,36 @@ from langchain_groq import ChatGroq
 from tools.tavily_tool import tavily_search
 from tools.flight_tool import search_flights
 
+def get_checkpointer():
+    mysql_url = os.getenv("MYSQL_URL")
+    postgres_url = os.getenv("DATABASE_URL")
+    # Priority 1: MySQL Checkpointer
+    if mysql_url:
+        print(" Using MySQL Checkpointer...")
+        params = PyMySQLSaver.parse_conn_string(mysql_url)
+        conn = pymysql.connect(
+            host=params["host"],
+            user=params["user"],
+            password=params["password"],
+            database=params["database"],
+            port=params["port"],
+            autocommit=True
+        )
+        checkpointer = PyMySQLSaver(conn)
+        checkpointer.setup()  # Automatically creates tables if not present
+        return checkpointer
+    # Priority 2: PostgreSQL Checkpointer
+    elif postgres_url:
+        print(" Using PostgreSQL Checkpointer...")
+        _conn = psycopg.connect(
+            get_database_url(),
+            autocommit=True,
+            row_factory=dict_row
+        )
+        checkpointer = PostgresSaver(_conn)
+        checkpointer.setup()
+        return checkpointer
+    raise ValueError("Neither MYSQL_URL nor DATABASE_URL was found in .env!")
 
 def get_database_url():
     database_url = os.getenv("DATABASE_URL")
@@ -204,20 +236,8 @@ graph.add_edge("itinerary_agent", "final_agent")
 graph.add_edge("final_agent", END)
 
 
-# =========================
-# PostgreSQL Checkpointer
-# =========================
-DATABASE_URL = get_database_url()
 
-_conn = psycopg.connect(
-    DATABASE_URL,
-    autocommit=True,
-    row_factory=dict_row
-)
-
-checkpointer = PostgresSaver(_conn)
-checkpointer.setup()
-
+checkpointer = get_checkpointer()
 travel_graph = graph.compile(checkpointer=checkpointer)
 
 
